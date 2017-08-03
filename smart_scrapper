@@ -1,0 +1,680 @@
+#!/usr/bin/env ruby
+
+require 'nokogiri'
+require 'mechanize'
+require 'mysql2'
+require 'waitutil'
+require 'colorize'
+require 'cgi'
+require 'redis'
+require 'securerandom'
+
+# ################################## #
+#                                    #
+# EyeWatch                           #
+#                                    #
+# This module is ment to manage the  #
+# scrapping of facebook and login    #
+# to facebook.                       #
+#                                    #
+# @author : Hector Goycoolea         #
+# @fecha  : 19.Mayo.2017             #
+# ################################## #
+module EyeWatch
+  # client global variable
+  @@client = Mysql2::Client.new(:host => "develop2.cnuegocawnbb.us-west-2.rds.amazonaws.com", :username => "develop2", :database => 'crawler',:password=>'catita123')
+  # mechanize global variable
+  @@agent = Mechanize.new
+  # we degine a local variable
+  $json = ""
+  # ###############################
+  #
+  # scraper to facebook (vanity)
+  #
+  # This method allows the facebook
+  # Login via POST into the mobile
+  # Version of facebook.
+  # ################################
+  def fb_deep_scrap vanity
+    # exception management
+    begin
+      # get the entire wall of the user from its view
+      getWall vanity
+      # get all the friend relations he currently has
+      getFriends vanity
+      # get the groups of the user belongs to
+      getGroups vanity
+      # visiting pages of the user
+      getMap vanity
+    rescue Exception => e
+      # puts the exception
+      # puts e.message
+      # backtrace to inspect
+      # puts e.backtrace.inspect
+      # information to the error of the thread
+      # puts "error on thread"
+    end
+  end
+  # ###############################
+  #
+  # login to facebook (vanity)
+  #
+  # This method allows the facebook
+  # Login via POST into the mobile
+  # Version of facebook.
+  # ################################
+  def fbLogin username, password
+    # repository connection
+    R.select(3)
+    # agent alias, this replaces the user_agent
+    @@agent.user_agent_alias = 'Mac Safari'
+    # agent ssl verification none
+    @@agent.verify_mode = OpenSSL::SSL::VERIFY_NONE
+    # login page dump for the facebook mobile form
+    @@agent.get('https://www.facebook.com/')
+    # form to POST
+    login_form = @@agent.page.form_with(:method => 'POST')
+    # user email
+    login_form.email = username
+    # user password
+    login_form.pass = password
+    # page submit
+    @@agent.submit(login_form)
+  end
+  # ###############################
+  #
+  # getWall vanity
+  #
+  # ################################
+  def getWall vanity
+    begin
+      # page get url
+      page = @@agent.get('https://www.facebook.com/' + vanity)
+      # boddy for the page of the wall
+      body = page.body
+      # query to insert into the database
+      R.set('wall:'+vanity,body)
+        # @@client.query("INSERT INTO `crawler`.`fb_json_wall` (`avatar_id`, `usuario`, `json_dump`) VALUES('"+ vanity + "','"+ username + "','" + body + "');")
+    rescue Exception => e
+      puts e.message
+    end
+  end
+  # ###############################
+  #
+  # getFriends vanity
+  #
+  # ################################
+  def getFriends vanity
+    begin
+      # page get main url
+      page = @@agent.get('https://www.facebook.com/' + vanity)
+      # relate to friends page
+      if link = page.link_with(:text => /Amigos/) || page.link_with(:text => /Friends/)
+        # go to the click action
+        page = link.click
+        # body for the friends page
+        body = page.body
+        # insert
+        R.set('friends:'+vanity,body)
+        # query to insert into the database
+        # @@client.query("INSERT INTO `crawler`.`fb_json_friends` (`avatar_id`, `usuario`, `json_dump`) VALUES('"+ vanity + "','"+ username + "','" + body + "');")
+      end
+    rescue Exception => e
+      puts e.message
+    end
+  end
+  # ###############################
+  #
+  # getGroups vanity
+  #
+  # ################################
+  def getGroups vanity
+    begin
+      # click on the group page
+      page = @@agent.get('https://www.facebook.com/' + vanity + '/groups')
+      # boddy for the page of the wall
+      body = page.body
+      # insert
+      R.set('groups:'+vanity,body)
+        # query to insert into the database
+        # @@client.query("INSERT INTO `crawler`.`fb_json_group` (`avatar_id`, `usuario`, `json_dump`) VALUES('"+ vanity + "','"+ username + "','" + body + "');")
+    rescue Exception => e
+      puts e.message
+    end
+  end
+  # ###############################
+  #
+  # getMap vanity
+  #
+  # ################################
+  def getMap vanity
+    begin
+      # click on the visit page
+      page = @@agent.get('https://www.facebook.com/' + vanity + '/map')
+      # boddy for the page of the wall
+      body = page.body
+      # insert
+      R.set('map:'+vanity,body)
+        # query to insert into the database
+        # @@client.query("INSERT INTO `crawler`.`fb_json_map` (`avatar_id`, `usuario`, `json_dump`) VALUES('"+ vanity + "','"+ username + "','" + body + "');")
+    rescue Exception => e
+      puts e.message
+    end
+  end
+  # ###############################
+  #
+  # lookup_in_json w
+  #
+  # This method looks into the json
+  # and finds the uid and update's
+  # the fb_user and replaces the
+  # the fb_id and insert's its
+  # ################################
+  def lookup_in_json w
+    # repository connection
+    R.select(3)
+    # select the json friends and get the json from the avatar dump logic
+    result = @@client.query("SELECT * FROM crawler.fb_people")
+    # loop into the results
+    result.each do |row|
+      # gets the avatar id
+      vanity = row["fb_user"]
+      # gets the full html of the json
+      html = R.get("wall:"+vanity)
+      # Exception handling
+      begin
+        # gets the index inside the html
+        uid_index = html.index(w)
+        # the id has 9 numbers so let's do the math
+        uid_index = uid_index + 11 ;
+        # the index cuts and slides the string
+        uid_index = html.slice(uid_index..(uid_index+ 14 ))
+        # update the fb_people table and updates the uid
+        @@client.query("update fb_people set fb_id='" + uid_index +"' where fb_user='" + vanity + "' ")
+        # let the client know that the process was a success
+        puts uid_index
+      rescue
+        # no index found on the uid
+        puts "00000000"
+      end
+    end
+  end
+  # ###############################
+  #
+  # lookup_single_in_json w
+  #
+  # This method looks into the json
+  # and finds the uid and update's
+  # the fb_user and replaces the
+  # the fb_id and insert's its
+  # ################################
+  def solveid vanity, w
+    # repository connection
+    R.select(3)
+    # gets the full html of the json
+    html = R.get("wall:"+vanity)
+    # Exception handling
+    begin
+      # gets the index inside the html
+      uid_index = html.index(w)
+      # the id has 9 numbers so let's do the math
+      uid_index = uid_index + 11 ;
+      # the index cuts and slides the string
+      uid_index = html.slice(uid_index..(uid_index+ 14 ))
+      # update the fb_people table and updates the uid
+      @@client.query("update fb_people set fb_id='" + uid_index +"' where fb_user='" + vanity + "' ")
+      # let the client know that the process was a success
+      puts uid_index
+      #returns the resut
+      return uid_index
+    rescue Exception => e
+      # no index found on the uid
+      puts "00000000"
+      return "0"
+    end
+  end
+  # ###############################
+  #
+  # solveid_by_email username, password, email
+  #
+  # ################################
+  def solveid_by_email command_id, avatar_id, username, password, email, batch
+    begin
+      # pattern evaluation for email
+      puts("pattern evaluation for :".yellow + email)
+      # page get url
+      page_response = @@agent.get("https://www.facebook.com/search/people/?q=" +  email)
+      # boddy for the page of the wall
+      body = page_response.body
+      # gets the index inside the html
+      vanity_index = body.index("&ref=br_rs")
+      # vanity index did not work
+      if vanity_index.to_s.empty?
+        # we look for the other pattern
+        vanity_index = body.index("&amp;ref=br_rs")
+        # we look if is empty
+        unless vanity_index.to_s.empty?
+          # if we find the variable number pof the response we can itarate an find the first part
+          vanity_index_delta = vanity_index - 15
+          # the index cuts and slides the string
+          uid = body.slice(vanity_index_delta..(vanity_index - 1))
+          # si el usuario es viejo
+          uid_variable = uid.index("id=") + 3
+          unless vanity_index.to_s.empty?
+            uid = uid.slice(uid_variable..uid.length)
+          end
+          # uid not zero
+          if uid != "0"
+
+            command_ok_solveid command_id,avatar_id, email, username, password, uid, email, batch
+            return
+            # puts to the user
+            #puts("no pattern for ".red + email)
+          else
+            command_error_solveid command_id, avatar_id, email, username, password, 'EMPTY RESULTS', batch
+            return
+          end
+        end
+        # we look for the other pattern
+        vanity_index = body.index("?ref=br_rs")
+        # we look if is empty
+        unless vanity_index.to_s.empty?
+          # if we find the variable number pof the response we can itarate an find the first part
+          vanity_index_delta = vanity_index - 35
+          # the index cuts and slides the string
+          uid = body.slice(vanity_index_delta..(vanity_index - 1))
+
+          if uid.include? "/"
+            uid_split = uid.split('/')
+            # vanity candidate
+            vanity = uid_split.last
+            # we scrap the vanity fb_deep_scrap
+            fb_deep_scrap vanity
+            # finally we solve the id
+            uid = solveid vanity, 'data-fbid'
+            # in case is zero we take the targetfbid NEW
+            if uid == "0"
+              uid = solveid vanity, 'targetfbid'
+            end
+          end
+
+          # uid not zero
+          if uid != "0"
+
+            command_ok_solveid command_id,avatar_id, email, username, password, uid, email, batch
+            return
+            # puts to the user
+            #puts("no pattern for ".red + email)
+          else
+            command_error_solveid command_id, avatar_id, email, username, password, 'EMPTY RESULTS', batch
+            return
+          end
+        end
+
+      else
+        # if we find the variable number pof the response we can itarate an find the first part
+        vanity_index_delta = vanity_index - 35
+        # the index cuts and slides the string
+        vanity_index = body.slice(vanity_index_delta..(vanity_index - 1))
+        # split the vanity from the / of the facebook
+        split_vanity = vanity_index.split('/')
+        # vanity candidate
+        vanity = split_vanity.last
+      end
+
+      if vanity.to_s.empty?
+        # command error solved again
+        command_error_solveid command_id, avatar_id, email, username, password, 'EMPTY RESULTS', batch
+        return
+        # puts to the user
+        #puts("no pattern for ".red + email)
+      else
+        # we scrap the vanity fb_deep_scrap
+        fb_deep_scrap vanity
+        # finally we solve the id
+        uid = solveid vanity, 'data-fbid'
+        if uid != "0"
+          command_ok_solveid command_id,avatar_id, email, username, password, uid, vanity, batch
+          return
+          # puts to the user
+          puts("pattern found ".green + email)
+        else
+          command_error_solveid command_id, avatar_id, email, username, password, 'EMPTY RESULTS', batch
+          return
+        end
+      end
+    rescue Exception => e
+      command_error_solveid command_id, avatar_id, email, username, password, e.message, batch
+      # no index found on the uid
+      #puts "error"
+    end
+  end
+  # ###############################
+  #
+  # getwall_by_id command_id, avatar_id, username, password, vanity_uid, batch
+  #
+  # ################################
+  def getwall_by_id command_id, avatar_id, username, password, vanity_uid, batch
+    begin
+      # login to facebook
+      fbLogin username, password
+      # page get url
+      if check_string(vanity_uid)
+        page_response = @@agent.get("https://www.facebook.com/profile.php?id=" +  vanity_uid)
+      else
+        page_response = @@agent.get("https://www.facebook.com/" +  vanity_uid)
+      end
+      # boddy for the page of the wall
+      body = page_response.body
+      # gets the index inside the html
+      vanity_index =  indexes(body,"{comments:[{body:{text:")
+      # now we cut the chunks of data where we will look inside commments
+
+      # if we find the variable number pof the response we can itarate an find the first part
+      vanity_index_delta = vanity_index - 35 ;
+      # the index cuts and slides the string
+      vanity_index = body.slice(vanity_index_delta..(vanity_index-1))
+      # split the vanity from the / of the facebook
+      split_vanity = vanity_index.split("/")
+      # split the vanity on the index
+      vanity = split_vanity[1]
+      # we scrap the vanity fb_deep_scrap
+      fb_deep_scrap vanity
+      # finally we solve the id
+      uid = solveid vanity, "data-fbid"
+
+    rescue Exception => e
+      command_error_solveid command_id, avatar_id, email, username, password, e.message, batch
+      # no index found on the uid
+      #puts "error"
+    end
+  end
+  # ###############################
+  #
+  # command_ok_solveid
+  #
+  # This Method writes to the database the succesfull response
+  # The user on the frontend is aware of the result
+  # ################################
+  def command_ok_solveid id,avatar_id , params, avatar_user, avatar_pass, uid, vanity, batch
+    begin
+      # time execution
+      time_execution = Time.now
+      # json construction
+      json_ok = "Comando OK [Comando {id=" + id + ",batch="+batch+",comando=solveid,params=" + params + ",status=0,avatar=Avatar{id="+avatar_id+",usuario=" + avatar_user + ",contrasenia=" + avatar_pass + ",type=0,bannedStatus=0,heat=100,lastBanned=null,lastUsed=" + time_execution.inspect.to_s + "},respuesta="+ uid +",fechaEjecucion=" + time_execution.inspect.to_s + ",personasCreadas=1,amistadesCreadas=0,gruposCreados=0,paginasCreadas=0}]"
+      # upate query
+      @@client.query("update crawler.comando set respuesta='" + json_ok +"', fecha_ejecucion=NOW(), status=1 where id='" + id + "' ")
+      @@client.query("INSERT INTO crawler.fb_people (id,fb_user, fb_id) SELECT * FROM (SELECT '"+ SecureRandom.uuid + "', '"+vanity+"', '"+uid+"') AS tmp WHERE NOT EXISTS ( SELECT fb_user FROM crawler.fb_people WHERE fb_user = '" + vanity + "') LIMIT 1;")
+
+      puts "solveid                         done >>> " + uid
+    rescue Exception => e
+      #command_error_solveid command_id, avatar_id, email, username, password, e.message, batch
+      # no index found on the uid
+      puts "solveid                         facebook empty result set"
+    end
+  end
+  # ###############################
+  #
+  # command_error_solveid
+  #
+  # This Method writes to the database the exception response
+  # The user on the frontend is aware of the result
+  # ################################
+  def command_error_solveid id,avatar_id , params, avatar_user, avatar_pass, exception, batch
+    begin
+      # time execution
+      time_execution = Time.now
+      # json construction
+      json_ok = "Comando ERROR [Comando {id=" + id + ",batch="+batch+",comando=solveid,params=" + params + ",status=0,avatar=Avatar{id="+avatar_id+",usuario=" + avatar_user + ",contrasenia=" + avatar_pass + ",type=0,bannedStatus=0,heat=100,lastBanned=null,lastUsed=" + time_execution.inspect.to_s + "},respuesta=::FB_EMPTY_RESULT_GRID,fechaEjecucion=" + time_execution.inspect.to_s + ",personasCreadas=1,amistadesCreadas=0,gruposCreados=0,paginasCreadas=0}]"
+      # report empty result
+      @@client.query("update crawler.comando set respuesta='" + json_ok + "', fecha_ejecucion=NOW(), status=2 where id='" + id + "' ")
+
+    rescue Exception => e
+      #command_error_solveid command_id, avatar_id, email, username, password, e.message, batch
+      # no index found on the uid
+      puts "solveid privacy protected facebook              [protected]"
+    end
+  end
+  # ###############################
+  #
+  # check_string
+  #
+  # ################################
+  def check_string(string)
+    string.scan(/\D/).empty?
+  end
+  # ###############################
+  #
+  # getCommands
+  #
+  # This gets the commands to run
+  # and valids to run as well
+  # ################################
+  def getCommands username, password, status
+    # login to facebook
+    fbLogin username, password
+
+    sql = 'SELECT * FROM crawler.comando where status=' + status.to_s
+    # select the json friends and get the json from the avatar dump logic
+    result = @@client.query(sql)
+    # let the user to know
+    puts "commands solveid    ......    [runnig]".green
+    # loop into the results
+    result.each do |row|
+
+      id = row["id"]
+      # we get the command
+      command = row["comando"]
+      # we get the params
+      params = row["params"]
+      # batch
+      batch = row["batch"]
+      # split the parameters
+      command_params = params.split(":")
+      # lets get the type
+      type_param = command_params[0]
+      # lets get the data
+      data_param = command_params[1]
+      # we now execute the solveid command
+      case command
+        #solveid case
+        when 'solveid'
+
+          if type_param == "email"
+            # we run the rutine
+            solveid_by_email id,"0", username, password, data_param, batch
+          elsif type_param == "unknown"
+            # we run the rutine
+            uid = solveid data_param, "data-fbid"
+            # if the execution is correct we run single
+            if uid != "0"
+              command_ok_solveid id,id, data_param, username, password, uid, data_param, batch
+            else
+              command_error_solveid id, id, data_param, username, password, 'EMPTY RESULTS', batch
+            end
+          end
+
+=begin
+        when 'getwall'
+          # let the user to know
+          p "commands getwall    ......    [runnig]".green
+          # we run the rutine
+          getwall_by_id id,"0", username, password, data_param, batch
+          # we let the user know
+          pp 'done. :)'.red
+=end
+        else
+
+      end
+    end
+    puts 'done. :)'.red
+  end
+  # ###############################
+  #
+  # start username, password
+  #
+  # This method takes the fb_people
+  # and finds the fb_user and gets
+  # the avatar to implant into the
+  # the login method and persist the
+  # session and change the website
+  # ################################
+  def start username, password
+    # select the fb_people table and get the all table
+    result = @@client.query("SELECT * FROM crawler.fb_people")
+    # login to facebook
+    fbLogin username, password
+    # loop the results
+    result.each do |row|
+      # vanity interpretation of te fb_user
+      vanity = row["fb_user"]
+      # Exception Handling
+      begin
+        # login to facebook and visit our vanity
+        fb_deep_scrap vanity
+        # Waituntil the process is finished
+        WaitUtil.wait_for_condition("my_event to happen", :timeout_sec => 100, :delay_sec => 2.5, :verbose => true) do
+          # wait until go to the vanity page and we just sit tight to end on 100 secs
+        end
+          # Catch for the Exception Handling
+      rescue Exception => e
+        # puts the message
+        #puts e.message
+        # backtrace and ispect
+        #puts e.backtrace.inspect
+      end
+    end
+  end
+  # ###############################
+  #
+  # avatar_iterator
+  #
+  # This method takes the avatar
+  # table and reads it complete.
+  # sends it to the start method
+  # and loops on the vanity so we
+  # get the full db of users from table.
+  # ################################
+  def avatar_iterator status
+    # select the fb_people table and get the all table
+    result = @@client.query("SELECT * FROM crawler.avatar where type=2")
+    # loop the results
+    result.each do |row|
+      # vanity interpretation of te fb_user
+      username = row["usuario"]
+      password = row["contrasenia"]
+      # Exception Handling
+      begin
+        # commands for username and password
+        EyeWatch.getCommands username, password, status
+      rescue Exception => e
+        # puts the message
+        puts e.message
+        # backtrace and ispect
+        #puts e.backtrace.inspect
+      end
+    end
+  end
+  # ###############################
+  #
+  # solveid_quality_assurance
+  #
+  # ################################
+  def solveid_quality_assurance
+    begin
+      # login to facebook
+      fbLogin "maquiroz6@vera.com.uy", "Montevideo2017"
+      # select the fb_people table and get the all table
+      result = @@client.query("SELECT * FROM crawler.solveid")
+      # loop the results
+      result.each do |row|
+        # vanity interpretation of te fb_user
+        email = row["email"]
+        # Exception Handling
+        begin
+          @@agent.verify_mode = OpenSSL::SSL::VERIFY_NONE
+          # page get url
+          page_response = @@agent.get("https://www.facebook.com/search/people/?q=" +  email)
+          # boddy for the page of the wall
+          body = page_response.body
+          # gets the index inside the html
+          vanity_index =  body.index("?ref=br_rs")
+          # if we find the variable number pof the response we can itarate an find the first part
+          vanity_index_delta = vanity_index - 35 ;
+          # the index cuts and slides the string
+          vanity_index = body.slice(vanity_index_delta..(vanity_index-1))
+          # split the vanity from the / of the facebook
+          split_vanity = vanity_index.split("/")
+          # split the vanity on the index
+          vanity = split_vanity[1]
+          # we scrap the vanity fb_deep_scrap
+          fb_deep_scrap vanity
+          # finally we solve the id
+          uid = solveid vanity, "data-fbid"
+          if uid != "0"
+            #command_ok_solveid command_id,avatar_id, email, username, password, uid, vanity, batch
+            puts "email:".green + email + "fbid:".green + uid
+            # insert
+            R.set('fbid:' + email + ':' + uid, uid)
+          else
+            puts "privacy blocked".red
+            #command_error_solveid command_id, avatar_id, email, username, password, 'EMPTY RESULTS', batch
+            R.set('fbid:' + email + ':0', '0')
+          end
+            # Catch for the Exception Handling
+        rescue Exception => e
+          puts "privacy blocked".red
+          R.set('fbid:error:'+ email, 'privacy blocked by facebook ::FBWARN')
+          # puts the message
+          #puts e.message
+          # backtrace and ispect
+          #puts e.backtrace.inspect
+        end
+      end
+    rescue Exception => e
+      #command_error_solveid command_id, avatar_id, email, username, password, e.message, batch
+      # no index found on the uid
+      puts "error"
+    end
+  end
+  # ###############################
+  #
+  # indexes(w, needle)
+  #
+  # ################################
+  def indexes(w, needle)
+    found = []
+    current_index = -1
+    while current_index = w.index(needle, current_index+1)
+      found << current_index
+    end
+
+    return found
+  end
+  # instance for the R redis
+  R = Redis.new
+  # for the parent module
+  extend self
+end
+# ###############################
+#
+# Main for the Script
+#
+# This will accept several inputs
+# and we will name them commands.
+#
+# ################################
+if __FILE__ == $0
+  # case option for the command
+  # send from the console
+  case command = ARGV.shift
+    # case option
+    when 'commands'
+      # time
+      # recover the lost ones
+      EyeWatch.avatar_iterator ARGV[0]
+      #EyeWatch.getCommands "analauramartina@gmail.com", "Hmg9172!!", ARGV[0]
+    else
+      puts "00000000".green
+  end
+end
